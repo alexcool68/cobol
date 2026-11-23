@@ -61,7 +61,7 @@ async function runImportAndConvert() {
   if (!incidentNumber.value.trim()) {
     toast.add({
       title: 'Numéro d\'incident manquant',
-      description: 'Veuillez saisir un numéro d\'incident (ex: INC-2026-0042).',
+      description: 'Veuillez saisir un numéro d\'incident (ex: INC99991234).',
       color: 'warning'
     })
     return
@@ -154,7 +154,7 @@ async function runImportAndConvert() {
             color="neutral"
             variant="ghost"
             icon="i-lucide-arrow-left"
-            label="Historique"
+            label="Retour"
             to="/"
           />
         </template>
@@ -195,7 +195,7 @@ async function runImportAndConvert() {
                 <UInput
                   v-model="incidentNumber"
                   :disabled="Boolean(existingIncident)"
-                  placeholder="ex: INC-2026-5891"
+                  placeholder="ex: INC99991234"
                   size="lg"
                   icon="i-lucide-hash"
                   class="w-full font-mono"
