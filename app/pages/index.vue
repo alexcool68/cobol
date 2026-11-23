@@ -4,6 +4,7 @@ import type { IncidentSummary } from '#shared/types/incident'
 useHead({ title: 'Incidents — Mainframe Tool' })
 
 const toast = useToast()
+const { formatDateTime, formatNumber } = useFormatters()
 const { data: incidents, refresh, status } = await useFetch<IncidentSummary[]>('/api/incidents', {
   default: () => []
 })
@@ -99,13 +100,13 @@ async function deleteIncident(inc: IncidentSummary) {
                 </NuxtLink>
               </td>
               <td class="px-4 py-3 text-xs text-muted">
-                {{ new Date(inc.createdAt).toLocaleString('fr-FR') }}
+                {{ formatDateTime(inc.createdAt) }}
               </td>
               <td class="px-4 py-3 font-mono text-xs">
                 {{ inc.filesCount }}
               </td>
               <td class="px-4 py-3 font-mono text-xs">
-                {{ inc.totalRecords.toLocaleString('fr-FR') }}
+                {{ formatNumber(inc.totalRecords) }}
               </td>
               <td class="px-4 py-3 font-mono text-xs">
                 {{ inc.totalCsvFiles }}

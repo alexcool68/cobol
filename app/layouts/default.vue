@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import type { FtpConfigPublic } from '#shared/types/config'
 
-const { data: ftpConfig } = await useFetch<FtpConfigPublic>('/api/admin/ftp', {
-  key: 'sidebar-ftp-status'
-})
-
-const isFtpConfigured = computed(() => Boolean(ftpConfig.value?.host && ftpConfig.value?.user))
+const { ftpConfig, isFtpConfigured } = useFtpStatus()
 
 const metierItems: NavigationMenuItem[] = [
   {

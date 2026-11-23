@@ -88,6 +88,18 @@ export const incidentRepository = {
     return readJsonFile<DecodedRecord[]>(join(getPreviewDir(incidentId), `${safeName}.json`), [])
   },
 
+  async removeCsvFiles(incidentId: string, fileNames: string[]): Promise<void> {
+    await Promise.allSettled(
+      fileNames.flatMap((fileName) => {
+        const safeName = basename(fileName)
+        return [
+          rm(join(getCsvDir(incidentId), safeName), { force: true }),
+          rm(join(getPreviewDir(incidentId), `${safeName}.json`), { force: true })
+        ]
+      })
+    )
+  },
+
   async remove(id: string): Promise<boolean> {
     const items = await this.list()
     const next = items.filter(i => i.id !== id)

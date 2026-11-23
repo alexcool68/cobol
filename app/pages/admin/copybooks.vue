@@ -4,6 +4,7 @@ import type { CopybookDetail, CopybookMeta, ParsedCopybook } from '#shared/types
 useHead({ title: 'Copybooks — Administration' })
 
 const toast = useToast()
+const { formatDate, getApiErrorMessage } = useFormatters()
 const { data: copybooks, refresh, status } = await useFetch<CopybookMeta[]>('/api/admin/copybooks', {
   default: () => []
 })
@@ -100,8 +101,7 @@ async function runPreview() {
     })
   } catch (err: unknown) {
     parsedPreview.value = null
-    const fetchErr = err as { statusMessage?: string; message?: string }
-    previewError.value = fetchErr.statusMessage ?? fetchErr.message ?? 'Erreur de parsing COBOL'
+    previewError.value = getApiErrorMessage(err, 'Erreur de parsing COBOL')
   } finally {
     previewLoading.value = false
   }
@@ -115,34 +115,23 @@ async function saveCopybook() {
 
   saving.value = true
   try {
-    if (editingId.value) {
-      await $fetch(`/api/admin/copybooks/${editingId.value}`, {
-        method: 'PUT',
-        body: {
-          name: form.name,
-          description: form.description,
-          rawContent: form.rawContent
-        }
-      })
-      toast.add({ title: 'Copybook mis à jour', color: 'success' })
-    } else {
-      await $fetch('/api/admin/copybooks', {
-        method: 'POST',
-        body: {
-          name: form.name,
-          description: form.description,
-          rawContent: form.rawContent
-        }
-      })
-      toast.add({ title: 'Copybook enregistré', color: 'success' })
-    }
+    const url = editingId.value ? `/api/admin/copybooks/${editingId.value}` : '/api/admin/copybooks'
+    const method = editingId.value ? 'PUT' : 'POST'
+    await $fetch(url, {
+      method,
+      body: {
+        name: form.name,
+        description: form.description,
+        rawContent: form.rawContent
+      }
+    })
+    toast.add({ title: editingId.value ? 'Copybook mis à jour' : 'Copybook enregistré', color: 'success' })
     isModalOpen.value = false
     await refresh()
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     toast.add({
       title: 'Erreur',
-      description: fetchErr.statusMessage ?? fetchErr.message ?? 'Impossible d\'enregistrer le copybook.',
+      description: getApiErrorMessage(err, 'Impossible d\'enregistrer le copybook.'),
       color: 'error'
     })
   } finally {
@@ -157,15 +146,6 @@ async function deleteCopybook(meta: CopybookMeta) {
     await refresh()
   } catch {
     toast.add({ title: 'Erreur lors de la suppression', color: 'error' })
-  }
-}
-
-function fieldTypeBadgeColor(type: string) {
-  switch (type) {
-    case 'PACKED_DECIMAL': return 'warning'
-    case 'BINARY': return 'info'
-    case 'ZONED_DECIMAL': return 'success'
-    default: return 'neutral'
   }
 }
 </script>
@@ -230,7 +210,7 @@ function fieldTypeBadgeColor(type: string) {
           <template #footer>
             <div class="flex items-center justify-between">
               <span class="text-xs text-muted">
-                MAJ {{ new Date(cb.updatedAt).toLocaleDateString('fr-FR') }}
+                MAJ {{ formatDate(cb.updatedAt) }}
               </span>
               <div class="flex items-center gap-1">
                 <UButton
@@ -318,113 +298,11 @@ function fieldTypeBadgeColor(type: string) {
               </div>
             </div>
 
-            <!-- Colonne droite : Inspecteur en direct -->
-            <div class="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
-              <div class="flex items-center justify-between">
-                <span class="text-sm font-semibold text-highlighted">Inspecteur de structure</span>
-                <UBadge v-if="parsedPreview" color="primary" variant="solid" class="font-mono">
-                  LRECL = {{ parsedPreview.lrecl }} octets
-                </UBadge>
-              </div>
-
-              <UAlert
-                v-if="previewError"
-                color="error"
-                variant="subtle"
-                icon="i-lucide-alert-circle"
-                title="Erreur d'analyse"
-                :description="previewError"
-              />
-
-              <div
-                v-else-if="!parsedPreview"
-                class="rounded-lg border border-dashed border-default p-8 text-center text-sm text-muted"
-              >
-                Collez votre copybook puis cliquez sur <strong>Analyser la structure</strong> pour vérifier le LRECL, les offsets et les blocs REDEFINES.
-              </div>
-
-              <template v-else>
-                <UAlert
-                  v-for="(warn, idx) in parsedPreview.warnings"
-                  :key="idx"
-                  color="warning"
-                  variant="subtle"
-                  icon="i-lucide-triangle-alert"
-                  :description="warn"
-                />
-
-                <!-- Champs communs -->
-                <div class="space-y-2">
-                  <h4 class="text-xs font-semibold uppercase tracking-wider text-muted">
-                    Tronc commun ({{ parsedPreview.commonFields.length }} champs)
-                  </h4>
-                  <div class="rounded-lg border border-default overflow-hidden">
-                    <table class="w-full text-xs">
-                      <thead class="bg-elevated/60 text-muted text-left">
-                        <tr>
-                          <th class="px-2.5 py-1.5">Champ</th>
-                          <th class="px-2.5 py-1.5">Pos.</th>
-                          <th class="px-2.5 py-1.5">Octets</th>
-                          <th class="px-2.5 py-1.5">PIC / Type</th>
-                        </tr>
-                      </thead>
-                      <tbody class="divide-y divide-default font-mono">
-                        <tr v-for="f in parsedPreview.commonFields" :key="`${f.offset}-${f.name}`">
-                          <td class="px-2.5 py-1.5 font-medium text-highlighted">{{ f.name }}</td>
-                          <td class="px-2.5 py-1.5 text-muted">{{ f.offset + 1 }}–{{ f.offset + f.byteLength }}</td>
-                          <td class="px-2.5 py-1.5">{{ f.byteLength }}</td>
-                          <td class="px-2.5 py-1.5">
-                            <UBadge :color="fieldTypeBadgeColor(f.type)" variant="subtle" size="xs">
-                              {{ f.pic }} {{ f.usage !== 'DISPLAY' ? f.usage : '' }}
-                            </UBadge>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <!-- Branches REDEFINES -->
-                <div class="space-y-2">
-                  <h4 class="text-xs font-semibold uppercase tracking-wider text-muted">
-                    Branches REDEFINES ({{ parsedPreview.redefinesBranches.length }})
-                  </h4>
-                  <div v-if="parsedPreview.redefinesBranches.length === 0" class="text-xs text-muted italic">
-                    Aucun REDEFINES détecté dans ce copybook.
-                  </div>
-                  <div
-                    v-for="branch in parsedPreview.redefinesBranches"
-                    :key="branch.name"
-                    class="rounded-lg border border-default overflow-hidden"
-                  >
-                    <div class="px-3 py-2 bg-elevated/60 flex items-center justify-between gap-2">
-                      <div class="flex items-center gap-2 font-mono text-xs">
-                        <UIcon name="i-lucide-git-branch" class="size-3.5 text-primary" />
-                        <span class="font-semibold text-highlighted">{{ branch.name }}</span>
-                        <span class="text-muted">REDEFINES {{ branch.redefines }}</span>
-                      </div>
-                      <span class="text-xs text-muted font-mono">
-                        pos {{ branch.offset + 1 }} ({{ branch.byteLength }} o)
-                      </span>
-                    </div>
-                    <table class="w-full text-xs">
-                      <tbody class="divide-y divide-default font-mono">
-                        <tr v-for="f in branch.fields" :key="`${f.offset}-${f.name}`">
-                          <td class="px-2.5 py-1.5 text-highlighted">{{ f.name }}</td>
-                          <td class="px-2.5 py-1.5 text-muted">{{ f.offset + 1 }}–{{ f.offset + f.byteLength }}</td>
-                          <td class="px-2.5 py-1.5">{{ f.byteLength }} o</td>
-                          <td class="px-2.5 py-1.5">
-                            <UBadge :color="fieldTypeBadgeColor(f.type)" variant="subtle" size="xs">
-                              {{ f.pic }} {{ f.usage !== 'DISPLAY' ? f.usage : '' }}
-                            </UBadge>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </template>
-            </div>
+            <!-- Colonne droite : Composant Inspecteur COBOL -->
+            <CopybookStructureInspector
+              :parsed="parsedPreview"
+              :error="previewError"
+            />
           </div>
         </template>
 

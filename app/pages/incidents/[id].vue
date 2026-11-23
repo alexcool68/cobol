@@ -2,9 +2,12 @@
 import type { ChainGroupSummary, IncidentDetail, IncidentFileResult } from '#shared/types/incident'
 
 const route = useRoute()
+const router = useRouter()
+const toast = useToast()
+const { formatBytes, formatDateTime, formatNumber, getApiErrorMessage } = useFormatters()
 const incidentId = computed(() => String(route.params.id))
 
-const { data: incident, error } = await useFetch<IncidentDetail>(() => `/api/incidents/${incidentId.value}`)
+const { data: incident, error, refresh } = await useFetch<IncidentDetail>(() => `/api/incidents/${incidentId.value}`)
 
 useHead({
   title: () => incident.value ? `Incident ${incident.value.incidentNumber} — Mainframe Tool` : 'Incident'
@@ -14,7 +17,9 @@ const activeFileIndex = ref(0)
 const selectedGroupKey = ref<string | null>(null)
 const previewRows = ref<Record<string, string>[]>([])
 const previewLoading = ref(false)
-const searchRow = ref('')
+const rerunning = ref(false)
+const deletingFile = ref(false)
+const deletingIncident = ref(false)
 
 const activeFile = computed<IncidentFileResult | undefined>(() =>
   incident.value?.files[activeFileIndex.value]
@@ -45,25 +50,110 @@ async function loadPreview(group: ChainGroupSummary | undefined) {
 
 watch(activeFileIndex, () => {
   selectedGroupKey.value = activeFile.value?.groups[0]?.key ?? null
-  searchRow.value = ''
 })
 
 watch(activeGroup, (grp) => {
   loadPreview(grp)
 }, { immediate: true })
 
-const filteredPreviewRows = computed(() => {
-  const q = searchRow.value.trim().toLowerCase()
-  if (!q) return previewRows.value
-  return previewRows.value.filter(row =>
-    Object.values(row).some(val => String(val).toLowerCase().includes(q))
-  )
-})
+async function rerunViaFtp() {
+  if (!incident.value || !activeFile.value) return
+  rerunning.value = true
+  try {
+    const updated = await $fetch<IncidentDetail>(
+      `/api/incidents/${incident.value.id}/files/${activeFileIndex.value}/rerun`,
+      { method: 'POST', body: { dsn: activeFile.value.dsnUsed } }
+    )
+    incident.value = updated
+    selectedGroupKey.value = updated.files[activeFileIndex.value]?.groups[0]?.key ?? null
+    await loadPreview(activeGroup.value)
+    toast.add({
+      title: 'Traitement relancé (FTP)',
+      description: `Fichier ${activeFile.value.dsnUsed} reconverti avec la configuration actuelle.`,
+      color: updated.files[activeFileIndex.value]?.status === 'success' ? 'success' : 'error'
+    })
+  } catch (err: unknown) {
+    toast.add({
+      title: 'Erreur lors de la relance',
+      description: getApiErrorMessage(err, 'Impossible de relancer le traitement.'),
+      color: 'error'
+    })
+  } finally {
+    rerunning.value = false
+  }
+}
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} o`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} Mo`
+async function replaceWithLocalFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !incident.value || !activeFile.value) return
+
+  rerunning.value = true
+  try {
+    const formData = new FormData()
+    formData.append('dsn', activeFile.value.dsnUsed || file.name)
+    formData.append('file', file, file.name)
+
+    const updated = await $fetch<IncidentDetail>(
+      `/api/incidents/${incident.value.id}/files/${activeFileIndex.value}/rerun`,
+      { method: 'POST', body: formData }
+    )
+    incident.value = updated
+    selectedGroupKey.value = updated.files[activeFileIndex.value]?.groups[0]?.key ?? null
+    await loadPreview(activeGroup.value)
+    toast.add({
+      title: 'Traitement remplacé',
+      description: `Fichier local "${file.name}" converti avec succès.`,
+      color: updated.files[activeFileIndex.value]?.status === 'success' ? 'success' : 'error'
+    })
+  } catch (err: unknown) {
+    toast.add({
+      title: 'Erreur lors de la conversion',
+      description: getApiErrorMessage(err, 'Impossible de remplacer le fichier.'),
+      color: 'error'
+    })
+  } finally {
+    rerunning.value = false
+  }
+}
+
+async function deleteActiveFile() {
+  if (!incident.value || !activeFile.value) return
+  deletingFile.value = true
+  const dsnName = activeFile.value.dsnUsed
+  try {
+    const updated = await $fetch<IncidentDetail>(
+      `/api/incidents/${incident.value.id}/files/${activeFileIndex.value}`,
+      { method: 'DELETE' }
+    )
+    incident.value = updated
+    if (activeFileIndex.value >= updated.files.length) {
+      activeFileIndex.value = Math.max(0, updated.files.length - 1)
+    }
+    selectedGroupKey.value = updated.files[activeFileIndex.value]?.groups[0]?.key ?? null
+    await loadPreview(activeGroup.value)
+    toast.add({ title: `Traitement "${dsnName}" supprimé`, color: 'success' })
+  } catch {
+    toast.add({ title: 'Erreur lors de la suppression', color: 'error' })
+    await refresh()
+  } finally {
+    deletingFile.value = false
+  }
+}
+
+async function deleteWholeIncident() {
+  if (!incident.value) return
+  deletingIncident.value = true
+  try {
+    await $fetch(`/api/incidents/${incident.value.id}`, { method: 'DELETE' })
+    toast.add({ title: `Incident ${incident.value.incidentNumber} supprimé`, color: 'success' })
+    await router.push('/')
+  } catch {
+    toast.add({ title: 'Erreur lors de la suppression de l\'incident', color: 'error' })
+  } finally {
+    deletingIncident.value = false
+  }
 }
 </script>
 
@@ -83,12 +173,29 @@ function formatBytes(bytes: number): string {
             to="/"
           />
           <UButton
+            v-if="incident"
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-plus"
+            label="Ajouter des fichiers"
+            :to="`/incidents/new?incidentId=${incident.id}`"
+          />
+          <UButton
             v-if="incident && incident.totalCsvFiles > 0"
             icon="i-lucide-archive"
             label="Tout télécharger (ZIP)"
             :to="`/api/incidents/${incident.id}/zip`"
             target="_blank"
             external
+          />
+          <UButton
+            v-if="incident"
+            color="error"
+            variant="ghost"
+            icon="i-lucide-trash-2"
+            title="Supprimer cet incident"
+            :loading="deletingIncident"
+            @click="deleteWholeIncident"
           />
         </template>
       </UDashboardNavbar>
@@ -110,7 +217,7 @@ function formatBytes(bytes: number): string {
           <UCard :ui="{ body: 'p-4' }">
             <div class="text-xs text-muted">Date de traitement</div>
             <div class="text-sm font-semibold text-highlighted mt-1">
-              {{ new Date(incident.createdAt).toLocaleString('fr-FR') }}
+              {{ formatDateTime(incident.createdAt) }}
             </div>
           </UCard>
           <UCard :ui="{ body: 'p-4' }">
@@ -122,7 +229,7 @@ function formatBytes(bytes: number): string {
           <UCard :ui="{ body: 'p-4' }">
             <div class="text-xs text-muted">Total enregistrements</div>
             <div class="text-xl font-bold font-mono text-highlighted mt-1">
-              {{ incident.totalRecords.toLocaleString('fr-FR') }}
+              {{ formatNumber(incident.totalRecords) }}
             </div>
           </UCard>
           <UCard :ui="{ body: 'p-4' }">
@@ -133,187 +240,127 @@ function formatBytes(bytes: number): string {
           </UCard>
         </div>
 
-        <!-- Sélecteur d'onglets par fichier DSN -->
-        <div class="flex flex-wrap gap-2 border-b border-default pb-3">
-          <UButton
-            v-for="(file, idx) in incident.files"
-            :key="`${file.modelId}-${idx}`"
-            :color="activeFileIndex === idx ? 'primary' : 'neutral'"
-            :variant="activeFileIndex === idx ? 'solid' : 'outline'"
-            size="sm"
-            @click="activeFileIndex = idx"
-          >
-            <span class="font-mono">{{ file.dsnUsed }}</span>
-            <UBadge
-              :color="file.status === 'success' ? 'success' : 'error'"
-              variant="subtle"
-              size="xs"
-              class="ml-1.5"
-            >
-              {{ file.status === 'success' ? `${file.totalRecords} l.` : 'Erreur' }}
-            </UBadge>
-          </UButton>
-        </div>
+        <UEmpty
+          v-if="incident.files.length === 0"
+          icon="i-lucide-folder-open"
+          title="Aucun traitement dans cet incident"
+          description="Tous les fichiers de cet incident ont été supprimés. Ajoutez un nouveau fichier pour relancer une conversion."
+          :actions="[
+            { label: 'Ajouter des fichiers', icon: 'i-lucide-plus', to: `/incidents/new?incidentId=${incident.id}` }
+          ]"
+        />
 
-        <!-- Détail du fichier sélectionné -->
-        <template v-if="activeFile">
-          <div class="flex flex-wrap items-center gap-3 text-xs text-muted">
-            <span>Modèle : <strong class="text-highlighted">{{ activeFile.modelName }}</strong></span>
-            <span>•</span>
-            <span>Copybook : <strong class="font-mono text-highlighted">{{ activeFile.copybookName }}</strong></span>
-            <span>•</span>
-            <span>LRECL : <strong class="font-mono text-highlighted">{{ activeFile.lrecl }} o</strong></span>
-            <span>•</span>
-            <span>Taille : <strong class="font-mono text-highlighted">{{ formatBytes(activeFile.fileSizeBytes) }}</strong></span>
-            <span>•</span>
-            <UBadge color="neutral" variant="soft" size="xs">
-              {{ activeFile.source === 'ftp' ? 'FTP Binaire' : 'Fichier local' }}
-            </UBadge>
+        <template v-else>
+          <!-- Onglets par fichier DSN -->
+          <div class="flex flex-wrap gap-2 border-b border-default pb-3">
+            <UButton
+              v-for="(file, idx) in incident.files"
+              :key="`${file.modelId}-${idx}`"
+              :color="activeFileIndex === idx ? 'primary' : 'neutral'"
+              :variant="activeFileIndex === idx ? 'solid' : 'outline'"
+              size="sm"
+              @click="activeFileIndex = idx"
+            >
+              <span class="font-mono">{{ file.dsnUsed }}</span>
+              <UBadge
+                :color="file.status === 'success' ? 'success' : 'error'"
+                variant="subtle"
+                size="xs"
+                class="ml-1.5"
+              >
+                {{ file.status === 'success' ? `${file.totalRecords} l.` : 'Erreur' }}
+              </UBadge>
+            </UButton>
           </div>
 
-          <UAlert
-            v-if="activeFile.status === 'error'"
-            color="error"
-            variant="subtle"
-            icon="i-lucide-x-circle"
-            title="Erreur lors de l'import ou du découpage"
-            :description="activeFile.errorMessage"
-          />
+          <!-- Détail du fichier sélectionné -->
+          <template v-if="activeFile">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div class="flex flex-wrap items-center gap-3 text-xs text-muted">
+                <span>Modèle : <strong class="text-highlighted">{{ activeFile.modelName }}</strong></span>
+                <span>•</span>
+                <span>Copybook : <strong class="font-mono text-highlighted">{{ activeFile.copybookName }}</strong></span>
+                <span>•</span>
+                <span>
+                  LRECL : <strong class="font-mono text-highlighted">{{ activeFile.lrecl }} o</strong>
+                  <UBadge v-if="activeFile.lreclAutoDetected" color="info" variant="subtle" size="xs" class="ml-1">
+                    auto-détecté
+                  </UBadge>
+                </span>
+                <span>•</span>
+                <span>Taille : <strong class="font-mono text-highlighted">{{ formatBytes(activeFile.fileSizeBytes) }}</strong></span>
+                <span>•</span>
+                <UBadge color="neutral" variant="soft" size="xs">
+                  {{ activeFile.source === 'ftp' ? 'FTP Binaire' : 'Fichier local' }}
+                </UBadge>
+              </div>
 
-          <UEmpty
-            v-else-if="activeFile.groups.length === 0"
-            icon="i-lucide-inbox"
-            title="Fichier vide"
-            description="Aucun enregistrement trouvé dans ce fichier."
-          />
-
-          <template v-else>
-            <!-- Cartes par Code Chaîne / TYP-ENR -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              <div
-                v-for="group in activeFile.groups"
-                :key="group.key"
-                class="rounded-lg border p-3.5 transition-all cursor-pointer"
-                :class="[
-                  activeGroup?.key === group.key
-                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                    : 'border-default bg-default hover:bg-elevated/40'
-                ]"
-                @click="selectedGroupKey = group.key"
-              >
-                <div class="flex items-start justify-between gap-2">
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <UBadge
-                      :color="group.isRejected ? 'error' : 'primary'"
-                      variant="subtle"
-                      class="font-mono font-semibold"
-                    >
-                      {{ group.codeChaine }}
-                    </UBadge>
-                    <UBadge
-                      v-if="group.typEnr"
-                      color="secondary"
-                      variant="soft"
-                      size="xs"
-                      class="font-mono"
-                    >
-                      TYP {{ group.typEnr }}
-                    </UBadge>
-                  </div>
-                  <UButton
-                    size="xs"
-                    color="neutral"
-                    variant="outline"
-                    icon="i-lucide-download"
-                    label="CSV"
-                    :to="`/api/incidents/${incident.id}/csv/${encodeURIComponent(group.csvFileName)}`"
-                    target="_blank"
-                    external
-                    @click.stop
-                  />
-                </div>
-
-                <div v-if="group.label" class="text-xs text-muted mt-2 truncate">
-                  {{ group.label }}
-                </div>
-
-                <div class="mt-2 flex items-baseline justify-between">
-                  <span class="text-lg font-bold font-mono text-highlighted">
-                    {{ group.recordCount.toLocaleString('fr-FR') }}
+              <div class="flex flex-wrap items-center gap-2 shrink-0">
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="outline"
+                  icon="i-lucide-refresh-cw"
+                  label="Relancer FTP"
+                  :loading="rerunning"
+                  @click="rerunViaFtp"
+                />
+                <label class="cursor-pointer">
+                  <input
+                    type="file"
+                    class="hidden"
+                    :disabled="rerunning"
+                    @change="replaceWithLocalFile"
+                  >
+                  <span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md border border-default bg-default hover:bg-elevated text-highlighted transition-colors">
+                    <UIcon name="i-lucide-upload" class="size-3.5" />
+                    Remplacer (.bin)
                   </span>
-                  <span class="text-xs text-muted">
-                    {{ group.recordCount > 1 ? 'lignes' : 'ligne' }}
-                  </span>
-                </div>
+                </label>
+                <UButton
+                  size="xs"
+                  color="error"
+                  variant="soft"
+                  icon="i-lucide-trash-2"
+                  label="Supprimer"
+                  :loading="deletingFile"
+                  @click="deleteActiveFile"
+                />
               </div>
             </div>
 
-            <!-- Tableau de prévisualisation -->
-            <UCard v-if="activeGroup" :ui="{ body: 'p-0' }">
-              <template #header>
-                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 class="font-semibold text-sm text-highlighted flex items-center gap-2">
-                      <span>Aperçu :</span>
-                      <span class="font-mono text-primary">{{ activeGroup.csvFileName }}</span>
-                    </h3>
-                    <p class="text-xs text-muted mt-0.5">
-                      Affichage des {{ Math.min(previewRows.length, 200) }} premières lignes sur {{ activeGroup.recordCount.toLocaleString('fr-FR') }}.
-                    </p>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <UInput
-                      v-model="searchRow"
-                      icon="i-lucide-search"
-                      placeholder="Filtrer dans l'aperçu..."
-                      size="sm"
-                      class="w-56"
-                    />
-                    <UButton
-                      size="sm"
-                      icon="i-lucide-file-spreadsheet"
-                      label="Télécharger CSV"
-                      :to="`/api/incidents/${incident.id}/csv/${encodeURIComponent(activeGroup.csvFileName)}`"
-                      target="_blank"
-                      external
-                    />
-                  </div>
-                </div>
-              </template>
+            <UAlert
+              v-if="activeFile.status === 'error'"
+              color="error"
+              variant="subtle"
+              icon="i-lucide-x-circle"
+              title="Erreur lors de l'import ou du découpage"
+              :description="activeFile.errorMessage"
+            />
 
-              <div v-if="previewLoading" class="py-12 flex justify-center">
-                <UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-muted" />
-              </div>
+            <UEmpty
+              v-else-if="activeFile.groups.length === 0"
+              icon="i-lucide-inbox"
+              title="Fichier vide"
+              description="Aucun enregistrement trouvé dans ce fichier."
+            />
 
-              <div v-else class="overflow-x-auto max-h-[55vh]">
-                <table class="w-full text-xs whitespace-nowrap">
-                  <thead class="bg-elevated/70 text-muted text-left sticky top-0 z-10 border-b border-default">
-                    <tr>
-                      <th class="px-3 py-2 font-mono text-muted">#</th>
-                      <th
-                        v-for="col in activeGroup.columns"
-                        :key="col"
-                        class="px-3 py-2 font-mono font-semibold"
-                      >
-                        {{ col }}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-default font-mono">
-                    <tr v-for="(row, rIdx) in filteredPreviewRows" :key="rIdx" class="hover:bg-elevated/30">
-                      <td class="px-3 py-1.5 text-muted">{{ rIdx + 1 }}</td>
-                      <td
-                        v-for="col in activeGroup.columns"
-                        :key="col"
-                        class="px-3 py-1.5 text-highlighted"
-                      >
-                        {{ row[col] ?? '' }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </UCard>
+            <template v-else>
+              <IncidentChainGroupCards
+                :incident-id="incident.id"
+                :groups="activeFile.groups"
+                :selected-key="activeGroup?.key"
+                @select="(key) => selectedGroupKey = key"
+              />
+
+              <IncidentPreviewTable
+                v-if="activeGroup"
+                :incident-id="incident.id"
+                :group="activeGroup"
+                :rows="previewRows"
+                :loading="previewLoading"
+              />
+            </template>
           </template>
         </template>
       </div>

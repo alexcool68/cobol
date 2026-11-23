@@ -16,6 +16,7 @@ export default defineEventHandler(async (event) => {
   }
 
   let incidentNumber = ''
+  let existingIncidentId = ''
   let rawItemsJson = ''
   const fileBuffers = new Map<string, Buffer>()
 
@@ -23,6 +24,8 @@ export default defineEventHandler(async (event) => {
     if (!part.name) continue
     if (part.name === 'incidentNumber') {
       incidentNumber = part.data.toString('utf-8').trim()
+    } else if (part.name === 'existingIncidentId') {
+      existingIncidentId = part.data.toString('utf-8').trim()
     } else if (part.name === 'items') {
       rawItemsJson = part.data.toString('utf-8')
     } else if (part.filename) {
@@ -58,6 +61,7 @@ export default defineEventHandler(async (event) => {
 
   return incidentService.runConversion({
     incidentNumber,
+    existingIncidentId: existingIncidentId || undefined,
     items: convertItems
   })
 })

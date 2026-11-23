@@ -5,6 +5,7 @@ import type { ChainRule } from '#shared/types/config'
 useHead({ title: 'Codes Chaîne — Administration' })
 
 const toast = useToast()
+const { getApiErrorMessage } = useFormatters()
 
 const [{ data: copybooks }, { data: chains, refresh }] = await Promise.all([
   useFetch<CopybookMeta[]>('/api/admin/copybooks', { default: () => [] }),
@@ -48,12 +49,15 @@ const commonFieldItems = computed(() =>
   }))
 )
 
-const redefinesBranchItems = computed(() =>
-  (activeCopybookDetail.value?.parsed.redefinesBranches ?? []).map(b => ({
+const NONE_BRANCH = '__NONE__'
+
+const redefinesBranchItems = computed(() => [
+  { label: 'Aucune (structure plate / tronc commun uniquement)', value: NONE_BRANCH },
+  ...(activeCopybookDetail.value?.parsed.redefinesBranches ?? []).map(b => ({
     label: `${b.name} (${b.fields.length} champs, ${b.byteLength} octets)`,
     value: b.name
   }))
-)
+])
 
 const filteredChains = computed(() => {
   if (selectedFilterCopybookId.value === 'ALL') return chains.value
@@ -92,7 +96,7 @@ function openCreate() {
   form.codeChaine = ''
   form.typEnrFieldName = ''
   form.typEnrValue = ''
-  form.redefinesBranchName = ''
+  form.redefinesBranchName = NONE_BRANCH
   form.label = ''
   useTypEnr.value = false
   isModalOpen.value = true
@@ -105,7 +109,7 @@ function openEdit(rule: ChainRule) {
   form.codeChaine = rule.codeChaine
   form.typEnrFieldName = rule.typEnrFieldName ?? ''
   form.typEnrValue = rule.typEnrValue ?? ''
-  form.redefinesBranchName = rule.redefinesBranchName
+  form.redefinesBranchName = rule.redefinesBranchName || NONE_BRANCH
   form.label = rule.label ?? ''
   useTypEnr.value = Boolean(rule.typEnrFieldName && rule.typEnrValue)
   isModalOpen.value = true
@@ -118,19 +122,23 @@ async function saveRule() {
     return
   }
 
-  if (!form.copybookId || !form.chainFieldName || !form.redefinesBranchName) {
-    toast.add({ title: 'Champs requis', description: 'Veuillez sélectionner le copybook, le champ Code Chaîne et la branche REDEFINES.', color: 'warning' })
+  if (!form.copybookId || !form.chainFieldName) {
+    toast.add({ title: 'Champs requis', description: 'Veuillez sélectionner le copybook et le champ Code Chaîne.', color: 'warning' })
     return
   }
 
   saving.value = true
+  const selectedBranch = form.redefinesBranchName && form.redefinesBranchName !== NONE_BRANCH
+    ? form.redefinesBranchName
+    : undefined
+
   const payload = {
     copybookId: form.copybookId,
     chainFieldName: form.chainFieldName,
     codeChaine: code,
     typEnrFieldName: useTypEnr.value ? form.typEnrFieldName : undefined,
     typEnrValue: useTypEnr.value ? form.typEnrValue : undefined,
-    redefinesBranchName: form.redefinesBranchName,
+    redefinesBranchName: selectedBranch,
     label: form.label || undefined
   }
 
@@ -145,10 +153,9 @@ async function saveRule() {
     isModalOpen.value = false
     await refresh()
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     toast.add({
       title: 'Erreur',
-      description: fetchErr.statusMessage ?? fetchErr.message ?? 'Impossible d\'enregistrer la règle.',
+      description: getApiErrorMessage(err, 'Impossible d\'enregistrer la règle.'),
       color: 'error'
     })
   } finally {
@@ -237,7 +244,8 @@ async function deleteRule(rule: ChainRule) {
                 {{ copybookNameMap.get(rule.copybookId) ?? rule.copybookId }}
               </td>
               <td class="px-4 py-3 font-mono text-xs text-highlighted">
-                {{ rule.redefinesBranchName }}
+                <span v-if="rule.redefinesBranchName">{{ rule.redefinesBranchName }}</span>
+                <UBadge v-else color="neutral" variant="soft" size="xs">Structure plate</UBadge>
               </td>
               <td class="px-4 py-3 text-muted">
                 {{ rule.label || '—' }}
@@ -327,11 +335,11 @@ async function deleteRule(rule: ChainRule) {
               </div>
             </div>
 
-            <UFormField label="Branche REDEFINES à appliquer" required>
+            <UFormField label="Branche REDEFINES à appliquer (optionnel)">
               <USelect
                 v-model="form.redefinesBranchName"
                 :items="redefinesBranchItems"
-                placeholder="Sélectionner la structure REDEFINES..."
+                placeholder="Aucune (structure plate)"
                 class="w-full"
               />
             </UFormField>

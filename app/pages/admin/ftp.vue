@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import type { FtpConfigPublic } from '#shared/types/config'
-
 useHead({ title: 'Connexion FTP — Administration' })
 
 const toast = useToast()
-const { data: ftpConfig, refresh } = await useFetch<FtpConfigPublic>('/api/admin/ftp')
+const { getApiErrorMessage } = useFormatters()
+const { ftpConfig, refreshFtpStatus } = useFtpStatus()
 
 const form = reactive({
   host: ftpConfig.value?.host ?? '',
@@ -34,13 +33,12 @@ async function saveConfig() {
       }
     })
     form.password = ''
-    await refresh()
+    await refreshFtpStatus()
     toast.add({ title: 'Configuration FTP enregistrée', color: 'success' })
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     toast.add({
       title: 'Erreur',
-      description: fetchErr.statusMessage ?? fetchErr.message ?? 'Impossible d\'enregistrer la configuration.',
+      description: getApiErrorMessage(err, 'Impossible d\'enregistrer la configuration.'),
       color: 'error'
     })
   } finally {
@@ -64,10 +62,9 @@ async function testConnection() {
       }
     })
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     testResult.value = {
       ok: false,
-      message: fetchErr.statusMessage ?? fetchErr.message ?? 'Erreur lors du test FTP.'
+      message: getApiErrorMessage(err, 'Erreur lors du test FTP.')
     }
   } finally {
     testing.value = false

@@ -10,7 +10,7 @@ export interface SaveChainRuleInput {
   codeChaine: string
   typEnrFieldName?: string
   typEnrValue?: string
-  redefinesBranchName: string
+  redefinesBranchName?: string
   label?: string
 }
 
@@ -49,7 +49,7 @@ export const configService = {
       codeChaine: input.codeChaine.trim().toUpperCase(),
       typEnrFieldName: input.typEnrFieldName?.trim().toUpperCase() || undefined,
       typEnrValue: input.typEnrValue?.trim() || undefined,
-      redefinesBranchName: input.redefinesBranchName.trim().toUpperCase(),
+      redefinesBranchName: input.redefinesBranchName?.trim().toUpperCase() || undefined,
       label: input.label?.trim() || undefined,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now

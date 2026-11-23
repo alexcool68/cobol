@@ -7,7 +7,7 @@ const schema = z.object({
   codeChaine: z.string().trim().length(4, 'Le Code Chaîne doit faire exactement 4 caractères'),
   typEnrFieldName: z.string().optional(),
   typEnrValue: z.string().optional(),
-  redefinesBranchName: z.string().min(1, 'Branche REDEFINES requise'),
+  redefinesBranchName: z.string().optional(),
   label: z.string().optional()
 })
 

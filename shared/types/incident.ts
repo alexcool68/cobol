@@ -21,6 +21,7 @@ export interface IncidentFileResult {
   copybookId: string
   copybookName: string
   lrecl: number
+  lreclAutoDetected?: boolean
   fileSizeBytes: number
   totalRecords: number
   status: 'success' | 'error'

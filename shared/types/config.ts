@@ -9,8 +9,8 @@ export interface ChainRule {
   typEnrFieldName?: string
   /** Optional exact value for TYP-ENR */
   typEnrValue?: string
-  /** Name of the REDEFINES branch in the copybook to apply */
-  redefinesBranchName: string
+  /** Optional name of the REDEFINES branch in the copybook to apply (empty = flat/common structure) */
+  redefinesBranchName?: string
   /** Optional human-readable label (e.g. "Prélèvements automatiques") */
   label?: string
   createdAt: string

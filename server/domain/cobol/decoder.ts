@@ -17,6 +17,7 @@ export interface DecodedChainGroup {
 
 export interface DecodedFileResult {
   lrecl: number
+  lreclAutoDetected?: boolean
   totalRecords: number
   groups: DecodedChainGroup[]
 }
@@ -162,6 +163,121 @@ export function decodeField(recordBuf: Buffer, field: CobolField): string {
 }
 
 /**
+ * Checks whether a record buffer at a given offset matches any configured ChainRule.
+ */
+function matchesAnyRule(
+  recordBuf: Buffer,
+  commonFieldsByName: Map<string, CobolField>,
+  rules: ChainRule[]
+): boolean {
+  for (const rule of rules) {
+    const chainField = commonFieldsByName.get(rule.chainFieldName)
+    if (!chainField) continue
+    const chainVal = decodeField(recordBuf, chainField).trim()
+    if (chainVal !== rule.codeChaine.trim()) continue
+
+    if (rule.typEnrFieldName && rule.typEnrValue) {
+      const typField = commonFieldsByName.get(rule.typEnrFieldName)
+      if (!typField) continue
+      const typVal = decodeField(recordBuf, typField).trim()
+      if (typVal !== rule.typEnrValue.trim()) continue
+    }
+    return true
+  }
+  return false
+}
+
+/**
+ * Scores a candidate LRECL by checking how many of the first N records match known ChainRules.
+ */
+function scoreCandidateLrecl(
+  buffer: Buffer,
+  candidateLrecl: number,
+  commonFieldsByName: Map<string, CobolField>,
+  rules: ChainRule[]
+): number {
+  const total = Math.floor(buffer.length / candidateLrecl)
+  const sampleCount = Math.min(total, 15)
+  if (sampleCount === 0) return 0
+
+  let matches = 0
+  for (let i = 0; i < sampleCount; i++) {
+    const slice = buffer.subarray(i * candidateLrecl, (i + 1) * candidateLrecl)
+    if (matchesAnyRule(slice, commonFieldsByName, rules)) {
+      matches++
+    }
+  }
+  return matches / sampleCount
+}
+
+/**
+ * Automatically detects the real physical LRECL when the file size is not an exact multiple
+ * of the copybook's calculated LRECL (e.g. 1-byte difference or trailing FB padding).
+ */
+function detectEffectiveLrecl(
+  buffer: Buffer,
+  copybook: ParsedCopybook,
+  rules: ChainRule[]
+): { lrecl: number; autoDetected: boolean } {
+  const baseLrecl = copybook.lrecl
+  if (buffer.length === 0 || baseLrecl <= 0) {
+    return { lrecl: baseLrecl, autoDetected: false }
+  }
+
+  const commonFieldsByName = new Map(copybook.commonFields.map(f => [f.name, f]))
+
+  // Fast path: exact multiple of copybook LRECL AND at least some records match (or no rules)
+  if (buffer.length % baseLrecl === 0) {
+    if (rules.length === 0 || buffer.length === baseLrecl) {
+      return { lrecl: baseLrecl, autoDetected: false }
+    }
+    const baseScore = scoreCandidateLrecl(buffer, baseLrecl, commonFieldsByName, rules)
+    if (baseScore >= 0.5) {
+      return { lrecl: baseLrecl, autoDetected: false }
+    }
+  }
+
+  // Build ordered candidate deltas around baseLrecl: -1, +1, -2, +2, ... up to [-16, +256]
+  const candidates: number[] = []
+  for (let d = 1; d <= 256; d++) {
+    if (d <= 16 && baseLrecl - d > 0) {
+      candidates.push(baseLrecl - d)
+    }
+    candidates.push(baseLrecl + d)
+  }
+
+  const exactDivisors = candidates.filter(c => c < buffer.length && buffer.length % c === 0)
+
+  if (exactDivisors.length > 0) {
+    if (rules.length > 0) {
+      let bestCandidate: number | null = null
+      let bestScore = 0
+
+      for (const candidate of exactDivisors) {
+        const score = scoreCandidateLrecl(buffer, candidate, commonFieldsByName, rules)
+        if (score > bestScore) {
+          bestScore = score
+          bestCandidate = candidate
+        }
+        if (score === 1) break
+      }
+
+      if (bestCandidate !== null && bestScore >= 0.8) {
+        return { lrecl: bestCandidate, autoDetected: true }
+      }
+    } else {
+      // No rules configured: pick closest exact divisor within [-4, +64]
+      const close = exactDivisors.find(c => c >= baseLrecl - 4 && c <= baseLrecl + 64)
+      if (close !== undefined) {
+        return { lrecl: close, autoDetected: true }
+      }
+    }
+  }
+
+  return { lrecl: baseLrecl, autoDetected: false }
+}
+
+/**
  * Decodes a complete fixed-block (FB) binary buffer using a ParsedCopybook and ChainRules.
  * Groups output records by Code Chaîne (+ TYP-ENR when configured), with unmatched rows in REJETS.
  */
@@ -171,9 +287,16 @@ export function decodeBinaryFile(
   rules: ChainRule[],
   options?: { lreclOverride?: number }
 ): DecodedFileResult {
-  const lrecl = options?.lreclOverride && options.lreclOverride > 0
-    ? options.lreclOverride
-    : copybook.lrecl
+  let lrecl: number
+  let lreclAutoDetected = false
+
+  if (options?.lreclOverride && options.lreclOverride > 0) {
+    lrecl = options.lreclOverride
+  } else {
+    const detected = detectEffectiveLrecl(buffer, copybook, rules)
+    lrecl = detected.lrecl
+    lreclAutoDetected = detected.autoDetected
+  }
 
   if (lrecl <= 0) {
     throw new Error('LRECL invalide (doit être > 0).')
@@ -222,7 +345,9 @@ export function decodeBinaryFile(
 
     // 3. Decode active REDEFINES branch or route to REJETS
     if (matchedRule) {
-      const branch = branchMap.get(matchedRule.redefinesBranchName)
+      const branch = matchedRule.redefinesBranchName
+        ? branchMap.get(matchedRule.redefinesBranchName)
+        : undefined
       const fullRow: DecodedRecord = { ...commonRow }
 
       if (branch) {
@@ -292,6 +417,7 @@ export function decodeBinaryFile(
 
   return {
     lrecl,
+    lreclAutoDetected,
     totalRecords,
     groups
   }

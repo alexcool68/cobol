@@ -406,7 +406,7 @@ export function parseCopybook(rawContent: string): ParsedCopybook {
   // Compute byte offsets and lengths
   const totalEnd = computeLayout(rootNodes, 0, warnings)
   const recordName = rootNodes[0]?.name ?? 'RECORD'
-  const lrecl = rootNodes[0]?.byteLength || totalEnd
+  const lrecl = totalEnd
 
   // Identify all redefined targets & REDEFINES branches
   const redefinedTargetNames = new Set<string>()

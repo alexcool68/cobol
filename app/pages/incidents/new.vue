@@ -2,30 +2,36 @@
 import type { CopybookMeta } from '#shared/types/cobol'
 import type { DsnModel } from '#shared/types/config'
 import type { IncidentDetail } from '#shared/types/incident'
+import type { IncidentFileRowModel } from '~/components/incident/FileSourceRow.vue'
 
 useHead({ title: 'Nouvel incident — Mainframe Tool' })
 
 const toast = useToast()
+const route = useRoute()
 const router = useRouter()
+const { formatNumber, getApiErrorMessage } = useFormatters()
 
-const [{ data: models }, { data: copybooks }] = await Promise.all([
+const existingIncidentId = computed(() =>
+  typeof route.query.incidentId === 'string' && route.query.incidentId.trim()
+    ? route.query.incidentId.trim()
+    : undefined
+)
+
+const [{ data: models }, { data: copybooks }, { data: existingIncident }] = await Promise.all([
   useFetch<DsnModel[]>('/api/admin/models', { default: () => [] }),
-  useFetch<CopybookMeta[]>('/api/admin/copybooks', { default: () => [] })
+  useFetch<CopybookMeta[]>('/api/admin/copybooks', { default: () => [] }),
+  existingIncidentId.value
+    ? useFetch<IncidentDetail>(`/api/incidents/${existingIncidentId.value}`)
+    : Promise.resolve({ data: ref<IncidentDetail | null>(null) })
 ])
 
 const copybookMap = computed(() => new Map(copybooks.value.map(c => [c.id, c])))
 
-interface SelectableRow {
-  model: DsnModel
-  checked: boolean
-  dsn: string
-  localFile: File | null
-}
-
-const incidentNumber = ref('')
+const sourceMode = ref<'ftp' | 'local'>('ftp')
+const incidentNumber = ref(existingIncident.value?.incidentNumber ?? '')
 const running = ref(false)
 
-const rows = ref<SelectableRow[]>(
+const rows = ref<IncidentFileRowModel[]>(
   models.value.map(m => ({
     model: m,
     checked: false,
@@ -36,18 +42,13 @@ const rows = ref<SelectableRow[]>(
 
 const selectedRows = computed(() => rows.value.filter(r => r.checked))
 
-function onLocalFileSelected(row: SelectableRow, event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0] ?? null
-  row.localFile = file
-  if (file) {
-    row.checked = true
+const canRun = computed(() => {
+  if (!incidentNumber.value.trim() || selectedRows.value.length === 0) return false
+  if (sourceMode.value === 'local') {
+    return selectedRows.value.every(r => Boolean(r.localFile))
   }
-}
-
-function clearLocalFile(row: SelectableRow) {
-  row.localFile = null
-}
+  return selectedRows.value.every(r => Boolean(r.localFile || r.dsn.trim()))
+})
 
 function toggleAll(checked: boolean | 'indeterminate') {
   const next = checked === true
@@ -69,7 +70,18 @@ async function runImportAndConvert() {
   if (selectedRows.value.length === 0) {
     toast.add({
       title: 'Aucun fichier sélectionné',
-      description: 'Cochez au moins un fichier DSN à importer et convertir.',
+      description: sourceMode.value === 'local'
+        ? 'Chargez au moins un fichier binaire à convertir.'
+        : 'Cochez au moins un fichier DSN à importer et convertir.',
+      color: 'warning'
+    })
+    return
+  }
+
+  if (sourceMode.value === 'local' && selectedRows.value.some(r => !r.localFile)) {
+    toast.add({
+      title: 'Fichier binaire manquant',
+      description: 'Chaque modèle coché doit avoir un fichier binaire sélectionné.',
       color: 'warning'
     })
     return
@@ -79,15 +91,23 @@ async function runImportAndConvert() {
   try {
     const formData = new FormData()
     formData.append('incidentNumber', incidentNumber.value.trim())
+    if (existingIncident.value?.id) {
+      formData.append('existingIncidentId', existingIncident.value.id)
+    }
 
     const itemsPayload = selectedRows.value.map((row) => {
-      const fileField = row.localFile ? `file_${row.model.id}` : undefined
-      if (row.localFile && fileField) {
+      const useLocal = sourceMode.value === 'local' || Boolean(row.localFile)
+      const fileField = useLocal && row.localFile ? `file_${row.model.id}` : undefined
+      if (useLocal && row.localFile && fileField) {
         formData.append(fileField, row.localFile, row.localFile.name)
       }
+      const dsnLabel = useLocal && row.localFile
+        ? (row.dsn.trim() || row.localFile.name)
+        : row.dsn.trim().toUpperCase()
+
       return {
         modelId: row.model.id,
-        dsn: row.dsn.trim().toUpperCase(),
+        dsn: dsnLabel,
         fileField
       }
     })
@@ -105,16 +125,15 @@ async function runImportAndConvert() {
         : result.status === 'partial'
           ? 'Conversion partielle (voir erreurs)'
           : 'Échec de la conversion',
-      description: `${result.totalRecords.toLocaleString('fr-FR')} enregistrements convertis en ${result.totalCsvFiles} fichier(s) CSV.`,
+      description: `${formatNumber(result.totalRecords)} enregistrements convertis en ${result.totalCsvFiles} fichier(s) CSV.`,
       color: result.status === 'completed' ? 'success' : result.status === 'partial' ? 'warning' : 'error'
     })
 
     await router.push(`/incidents/${result.id}`)
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     toast.add({
       title: 'Erreur lors du traitement',
-      description: fetchErr.statusMessage ?? fetchErr.message ?? 'Une erreur est survenue.',
+      description: getApiErrorMessage(err),
       color: 'error'
     })
   } finally {
@@ -154,46 +173,99 @@ async function runImportAndConvert() {
       />
 
       <div v-else class="max-w-5xl space-y-6">
-        <!-- 1. Numéro d'incident -->
-        <UCard>
-          <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-            <UFormField
-              label="Numéro d'incident"
-              description="Sert d'identifiant dans l'historique et pour le nommage de l'archive ZIP."
-              required
-              class="flex-1 max-w-md"
-            >
-              <UInput
-                v-model="incidentNumber"
-                placeholder="ex: INC-2026-5891"
-                size="lg"
-                icon="i-lucide-hash"
-                class="w-full font-mono"
-              />
-            </UFormField>
+        <UAlert
+          v-if="existingIncident"
+          color="info"
+          variant="subtle"
+          icon="i-lucide-folder-plus"
+          :title="`Ajout de fichiers à l'incident ${existingIncident.incidentNumber}`"
+          description="Les nouveaux fichiers convertis seront ajoutés directement dans cet incident existant."
+        />
 
-            <UButton
-              size="lg"
-              icon="i-lucide-zap"
-              :label="running ? 'Import & conversion en cours...' : `Importer et Convertir (${selectedRows.length})`"
-              :loading="running"
-              :disabled="selectedRows.length === 0 || !incidentNumber.trim()"
-              @click="runImportAndConvert"
-            />
+        <!-- 1. Numéro d'incident + Choix du mode -->
+        <UCard>
+          <div class="space-y-5">
+            <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+              <UFormField
+                label="Numéro d'incident"
+                description="Sert d'identifiant dans l'historique et pour le nommage de l'archive ZIP."
+                required
+                class="flex-1 max-w-md"
+              >
+                <UInput
+                  v-model="incidentNumber"
+                  :disabled="Boolean(existingIncident)"
+                  placeholder="ex: INC-2026-5891"
+                  size="lg"
+                  icon="i-lucide-hash"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+
+              <UButton
+                size="lg"
+                icon="i-lucide-zap"
+                :label="running
+                  ? 'Traitement en cours...'
+                  : sourceMode === 'local'
+                    ? `Convertir les fichiers (${selectedRows.length})`
+                    : `Importer et Convertir (${selectedRows.length})`"
+                :loading="running"
+                :disabled="!canRun"
+                @click="runImportAndConvert"
+              />
+            </div>
+
+            <USeparator />
+
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-medium text-highlighted">Mode de récupération des fichiers</div>
+                <p class="text-xs text-muted">
+                  Choisissez de rapatrier les datasets via FTP z/OS ou d'uploader directement des fichiers binaires depuis votre PC.
+                </p>
+              </div>
+              <div class="inline-flex rounded-lg border border-default p-1 bg-elevated/40 shrink-0">
+                <UButton
+                  size="sm"
+                  :color="sourceMode === 'ftp' ? 'primary' : 'neutral'"
+                  :variant="sourceMode === 'ftp' ? 'solid' : 'ghost'"
+                  icon="i-lucide-server"
+                  label="FTP z/OS (Binaire)"
+                  @click="sourceMode = 'ftp'"
+                />
+                <UButton
+                  size="sm"
+                  :color="sourceMode === 'local' ? 'primary' : 'neutral'"
+                  :variant="sourceMode === 'local' ? 'solid' : 'ghost'"
+                  icon="i-lucide-upload"
+                  label="Upload fichier binaire"
+                  @click="sourceMode = 'local'"
+                />
+              </div>
+            </div>
           </div>
         </UCard>
 
-        <!-- 2. Liste des fichiers DSN -->
+        <!-- 2. Liste des modèles -->
         <UCard>
           <template #header>
             <div class="flex items-center justify-between gap-4">
               <div>
-                <h3 class="font-semibold text-highlighted">Fichiers à récupérer</h3>
+                <h3 class="font-semibold text-highlighted">
+                  {{ sourceMode === 'local' ? 'Fichiers binaires à convertir' : 'Fichiers DSN à récupérer via FTP' }}
+                </h3>
                 <p class="text-xs text-muted mt-0.5">
-                  Cochez les fichiers concernés et ajustez le DSN z/OS si nécessaire. Vous pouvez aussi charger un fichier binaire local pour tester sans FTP.
+                  <template v-if="sourceMode === 'local'">
+                    Glissez-déposez ou sélectionnez un fichier binaire EBCDIC (.bin, etc.) en face du modèle correspondant.
+                  </template>
+                  <template v-else>
+                    Cochez les fichiers concernés et ajustez le DSN z/OS si nécessaire (vous pouvez aussi surcharger une ligne avec un fichier local).
+                  </template>
                 </p>
               </div>
               <UCheckbox
+                v-if="sourceMode === 'ftp'"
                 :model-value="selectedRows.length === rows.length && rows.length > 0"
                 label="Tout cocher"
                 @update:model-value="toggleAll"
@@ -202,78 +274,14 @@ async function runImportAndConvert() {
           </template>
 
           <div class="divide-y divide-default">
-            <div
+            <IncidentFileSourceRow
               v-for="row in rows"
               :key="row.model.id"
-              class="py-4 first:pt-0 last:pb-0 flex flex-col lg:flex-row lg:items-center gap-4"
-            >
-              <!-- Checkbox + Infos modèle -->
-              <div class="flex items-start gap-3 lg:w-72 shrink-0">
-                <UCheckbox v-model="row.checked" class="mt-0.5" />
-                <div class="min-w-0">
-                  <div class="font-medium text-sm text-highlighted truncate">
-                    {{ row.model.name }}
-                  </div>
-                  <div class="flex items-center gap-1.5 mt-1 flex-wrap">
-                    <UBadge color="neutral" variant="soft" size="xs" class="font-mono">
-                      {{ copybookMap.get(row.model.copybookId)?.name ?? 'Copybook' }}
-                    </UBadge>
-                    <UBadge color="neutral" variant="outline" size="xs" class="font-mono">
-                      LRECL {{ row.model.lreclOverride ?? copybookMap.get(row.model.copybookId)?.lrecl ?? '?' }}
-                    </UBadge>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Champ DSN réel (actif uniquement si coché) -->
-              <div class="flex-1 min-w-0">
-                <UInput
-                  v-model="row.dsn"
-                  :disabled="!row.checked"
-                  placeholder="DSN z/OS (ex: TEST.SPE.GJ020005)"
-                  icon="i-lucide-hard-drive"
-                  class="w-full font-mono uppercase"
-                />
-              </div>
-
-              <!-- Source : FTP ou Fichier local -->
-              <div class="flex items-center gap-2 shrink-0">
-                <template v-if="row.localFile">
-                  <UBadge color="info" variant="subtle" icon="i-lucide-file-up" class="max-w-44 truncate">
-                    {{ row.localFile.name }}
-                  </UBadge>
-                  <UButton
-                    size="xs"
-                    color="neutral"
-                    variant="ghost"
-                    icon="i-lucide-x"
-                    title="Revenir au mode FTP"
-                    @click="clearLocalFile(row)"
-                  />
-                </template>
-                <template v-else>
-                  <UBadge
-                    :color="row.checked ? 'primary' : 'neutral'"
-                    variant="soft"
-                    size="xs"
-                    icon="i-lucide-server"
-                  >
-                    FTP Binaire
-                  </UBadge>
-                  <label class="cursor-pointer">
-                    <input
-                      type="file"
-                      class="hidden"
-                      @change="(e) => onLocalFileSelected(row, e)"
-                    >
-                    <span class="inline-flex items-center gap-1 text-xs text-muted hover:text-highlighted px-2 py-1 rounded border border-default hover:bg-elevated transition-colors">
-                      <UIcon name="i-lucide-upload" class="size-3.5" />
-                      Local
-                    </span>
-                  </label>
-                </template>
-              </div>
-            </div>
+              :row="row"
+              :source-mode="sourceMode"
+              :copybook-name="copybookMap.get(row.model.copybookId)?.name ?? 'Copybook'"
+              :effective-lrecl="row.model.lreclOverride ?? copybookMap.get(row.model.copybookId)?.lrecl ?? '?'"
+            />
           </div>
         </UCard>
       </div>

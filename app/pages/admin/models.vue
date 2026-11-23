@@ -5,6 +5,7 @@ import type { ChainRule, DsnModel } from '#shared/types/config'
 useHead({ title: 'Modèles DSN — Administration' })
 
 const toast = useToast()
+const { getApiErrorMessage } = useFormatters()
 
 const [{ data: copybooks }, { data: chains }, { data: models, refresh }] = await Promise.all([
   useFetch<CopybookMeta[]>('/api/admin/copybooks', { default: () => [] }),
@@ -99,10 +100,9 @@ async function saveModel() {
     isModalOpen.value = false
     await refresh()
   } catch (err: unknown) {
-    const fetchErr = err as { statusMessage?: string; message?: string }
     toast.add({
       title: 'Erreur',
-      description: fetchErr.statusMessage ?? fetchErr.message ?? 'Impossible d\'enregistrer le modèle.',
+      description: getApiErrorMessage(err, 'Impossible d\'enregistrer le modèle.'),
       color: 'error'
     })
   } finally {
@@ -263,7 +263,7 @@ async function deleteModel(model: DsnModel) {
                   v-for="rule in availableChainsForSelectedCopybook"
                   :key="rule.id"
                   :model-value="form.chainRuleIds.includes(rule.id)"
-                  :label="`${rule.codeChaine}${rule.typEnrValue ? ` (TYP-ENR ${rule.typEnrValue})` : ''} → ${rule.redefinesBranchName}${rule.label ? ` — ${rule.label}` : ''}`"
+                  :label="`${rule.codeChaine}${rule.typEnrValue ? ` (TYP-ENR ${rule.typEnrValue})` : ''} → ${rule.redefinesBranchName || 'Structure plate'}${rule.label ? ` — ${rule.label}` : ''}`"
                   @update:model-value="(val) => toggleChainRule(rule.id, val)"
                 />
               </div>
